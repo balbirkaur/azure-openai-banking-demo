@@ -64,11 +64,6 @@ doc_chain = create_stuff_documents_chain(llm, prompt)
 qa_chain = create_retrieval_chain(vectorstore.as_retriever(), doc_chain)
 
 # ---------------- Banking System ----------------
-authenticated = False
-correct_pin = "1234"
-balance = 25500
-transactions = []
-
 
 def add_txn(type, amount=0):
     transactions.append(f"{type}: ₹{amount}")
@@ -78,33 +73,66 @@ def add_txn(type, amount=0):
 
 # ---------------- Chat Loop ----------------
 print("\n🤖 Banking AI Agent (Azure RAG + FAISS)")
-print("Please enter your PIN:\n")
+print("Welcome to ABC Bank virtual assistant!")
+
+stage = "ask_name"
+customer_name = ""
+account_number = ""
+authenticated = False
+correct_pin = "1234"
+balance = 25500
+transactions = []
 
 while True:
-    user_input = input("You: ").strip().lower()
+    user_input = input("You: ").strip()
 
-    if user_input == "exit":
-        print("👋 Thank you for banking with us!")
+    if user_input.lower() == "exit":
+        print(f"👋 Thank you for banking with us, {customer_name or 'customer'}!")
         break
 
-    # Login Check
-    if not authenticated:
+    # Onboarding flow
+    if stage == "ask_name":
+        print("🤖 May I know your name?")
+        stage = "get_name"
+        continue
+
+    if stage == "get_name":
+        customer_name = user_input
+        print(f"🤖 Nice to meet you, {customer_name}! Please enter your account number:")
+        stage = "get_account"
+        continue
+
+    if stage == "get_account":
+        account_number = user_input
+        print(f"🤖 Thanks, {customer_name}. Please enter your 4‑digit PIN:")
+        stage = "get_pin"
+        continue
+
+    if stage == "get_pin":
         if user_input == correct_pin:
             authenticated = True
-            print("🔓 Login successful! How can I help?")
+            stage = "chat"
+            print(f"🔓 Login successful for A/C {account_number}. How can I help you today?")
         else:
-            print("❌ Incorrect PIN. Try again.")
+            print("❌ Incorrect PIN. Try again:")
         continue
+
+    # After this point, user is authenticated and normal logic runs
+    if not authenticated:
+        print("⛔ Session error. Please restart.")
+        break
+
+    text = user_input.lower()
 
     # Commands
-    if "balance" in user_input:
-        print(f"💰 Available balance: ₹{balance}")
+    if "balance" in text:
+        print(f"💰 {customer_name}, your available balance is: ₹{balance}")
         continue
 
-    if "withdraw" in user_input:
-        nums = [int(s) for s in user_input.split() if s.isdigit()]
+    if "withdraw" in text:
+        nums = [int(s) for s in text.split() if s.isdigit()]
         if not nums:
-            print("💸 Enter the amount to withdraw:")
+            print("💸 Enter the amount to withdraw (for example: withdraw 1000):")
             continue
         amt = nums[0]
         if amt > balance:
@@ -112,21 +140,21 @@ while True:
         else:
             balance -= amt
             add_txn("Withdraw", amt)
-            print(f"✔ Withdrawn {amt}. New balance: ₹{balance}")
+            print(f"✔ Withdrawn ₹{amt}. New balance: ₹{balance}")
         continue
 
-    if "deposit" in user_input:
-        nums = [int(s) for s in user_input.split() if s.isdigit()]
+    if "deposit" in text:
+        nums = [int(s) for s in text.split() if s.isdigit()]
         if not nums:
-            print("💰 Enter deposit amount:")
+            print("💰 Enter deposit amount (for example: deposit 2000):")
             continue
         amt = nums[0]
         balance += amt
         add_txn("Deposit", amt)
-        print(f"✔ Deposited {amt}. New balance: ₹{balance}")
+        print(f"✔ Deposited ₹{amt}. New balance: ₹{balance}")
         continue
 
-    if "statement" in user_input or "transactions" in user_input:
+    if "statement" in text or "transactions" in text:
         if not transactions:
             print("📄 No recent transactions")
         else:
@@ -135,12 +163,19 @@ while True:
                 print(" -", t)
         continue
 
-    if "block" in user_input and "card" in user_input:
+    if "block" in text and "card" in text:
         ticket = random.randint(100000, 999999)
         add_txn("Card Block")
         print(f"🔒 Card blocked.\n📝 Ticket#: {ticket}")
         continue
 
-    # -------------- RAG Fallback ----------------
-    result = qa_chain.invoke({"input": user_input})
+    # RAG fallback
+    result = qa_chain.invoke({
+        "input": user_input,
+        "authenticated": authenticated,
+        "balance": balance,
+        "transactions": transactions,
+        "customer_name": customer_name,
+        "account_number": account_number,
+    })
     print("🤖 Agent:", result["answer"])
