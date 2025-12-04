@@ -5,20 +5,14 @@ client = MongoClient(os.getenv("MONGO_URI"))
 db = client["banking_ai"]
 users_collection = db["users"]
 
-def create_user(name: str, account_number: str, pin: str, initial_balance: int = 0):
+def create_user(customer_name: str, account_number: str, pin: str, initial_balance: int = 0):
     users_collection.insert_one({
-        "name": name,
+        "customer_name": customer_name,
         "account_number": account_number,
-        "pin": pin,  # Plain PIN (NO encryption)
+        "pin": pin,  # plain PIN for demo
         "balance": initial_balance,
         "transactions": [],
     })
-
-def verify_pin(account_number: str, pin: str) -> bool:
-    user = users_collection.find_one({"account_number": account_number})
-    if not user:
-        return False
-    return user["pin"] == pin  # Simple string comparison
 
 def get_balance(account_number: str) -> dict:
     user = users_collection.find_one({"account_number": account_number})
@@ -56,18 +50,37 @@ def get_transactions(account_number: str) -> dict:
         return {"error": "Account not found"}
     return {"transactions": user.get("transactions", [])[-5:]}
 
+# NO TRANSACTIONS VERSION – works on standalone MongoDB
 def transfer_money(sender_ac: str, receiver_ac: str, amount: int) -> dict:
     if amount <= 0:
         return {"error": "Invalid amount"}
-    with client.start_session() as session:
-        def txn(s):
-            sender = users_collection.find_one({"account_number": sender_ac, "balance": {"$gte": amount}}, session=s)
-            receiver = users_collection.find_one({"account_number": receiver_ac}, session=s)
-            if not sender or not receiver:
-                return {"error": "Account not found or insufficient balance"}
-            users_collection.update_one({"account_number": sender_ac}, 
-                {"$inc": {"balance": -amount}, "$push": {"transactions": f"Transfer Sent: ₹{amount} → {receiver_ac}"}}, session=s)
-            users_collection.update_one({"account_number": receiver_ac}, 
-                {"$inc": {"balance": amount}, "$push": {"transactions": f"Transfer Received: ₹{amount} ← {sender_ac}"}}, session=s)
-            return {"status": "success"}
-        return session.with_transaction(txn) or {"error": "Transfer failed"}
+
+    sender = users_collection.find_one(
+        {"account_number": sender_ac, "balance": {"$gte": amount}}
+    )
+    receiver = users_collection.find_one(
+        {"account_number": receiver_ac}
+    )
+
+    if not sender:
+        return {"error": "Sender account not found or insufficient balance"}
+    if not receiver:
+        return {"error": "Receiver account does not exist"}
+
+    users_collection.update_one(
+        {"account_number": sender_ac},
+        {
+            "$inc": {"balance": -amount},
+            "$push": {"transactions": f"Transfer Sent: ₹{amount} → {receiver_ac}"}
+        },
+    )
+
+    users_collection.update_one(
+        {"account_number": receiver_ac},
+        {
+            "$inc": {"balance": amount},
+            "$push": {"transactions": f"Transfer Received: ₹{amount} ← {sender_ac}"}
+        },
+    )
+
+    return {"status": "success"}

@@ -1,6 +1,5 @@
 import os
 import json
-import re
 from getpass import getpass
 from pymongo import MongoClient
 from dotenv import load_dotenv
@@ -14,12 +13,14 @@ from tools.banking_tools import (
     get_transactions, transfer_money
 )
 
+# ----------------- SETUP -----------------
 load_dotenv()
+
 client = MongoClient(os.getenv("MONGO_URI"))
 db = client["banking_ai"]
 users_collection = db["users"]
 
-# ========== TOOLS ==========
+# ----------------- TOOLS -----------------
 @tool("check_balance")
 def tool_check_balance(account_number: str):
     """Check the current account balance for the specified account number."""
@@ -45,10 +46,16 @@ def tool_fund_transfer(sender_ac: str, receiver_ac: str, amount: int):
     """Transfer funds from sender account to receiver account."""
     return transfer_money(sender_ac, receiver_ac, amount)
 
-tool_list = [tool_check_balance, tool_deposit, tool_withdraw, tool_statement, tool_fund_transfer]
+tool_list = [
+    tool_check_balance,
+    tool_deposit,
+    tool_withdraw,
+    tool_statement,
+    tool_fund_transfer,
+]
 tool_dict = {t.name: t for t in tool_list}
 
-# ========== LLM (NO RAG) ==========
+# ----------------- LLM (NO RAG) -----------------
 llm = AzureChatOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -57,8 +64,9 @@ llm = AzureChatOpenAI(
     temperature=0,
 ).bind_tools(tool_list, tool_choice="auto")
 
-# ========== LOGIN ==========
+# ----------------- LOGIN FLOW -----------------
 print("\n🤖 Banking AI - ABC Bank")
+
 account_number = input("🔢 Account Number: ").strip()
 user = users_collection.find_one({"account_number": account_number})
 
@@ -68,7 +76,7 @@ while not user:
     user = users_collection.find_one({"account_number": account_number})
 
 customer_name = user["customer_name"]
-correct_pin = user["pin"]
+correct_pin = user["pin"]  # plain text PIN
 
 print(f"👋 Hi {customer_name}! Enter your PIN:")
 attempts = 3
@@ -83,29 +91,31 @@ while attempts > 0:
 if attempts == 0:
     exit("⛔ Account Locked!")
 
-# ========== EXPLICIT SYSTEM CONTEXT ==========
+# ----------------- SYSTEM CONTEXT -----------------
 system_context = SystemMessage(content=f"""
 CRITICAL BANKING INSTRUCTIONS:
 
-✅ AUTHENTICATED USER:
-Customer: {customer_name}
-Account: {account_number} ← USE THIS FOR ALL TOOLS
+AUTHENTICATED USER:
+- Customer: {customer_name}
+- Account: {account_number}
 
-MANDATORY TOOL ROUTING:
-"balance", "check balance", "how much money" → check_balance("{account_number}")
-"deposit 1000", "add money" → deposit("{account_number}", 1000)  
-"withdraw 500" → withdraw("{account_number}", 500)
-"statement", "transactions" → mini_statement("{account_number}")
-"transfer 1000 XYZ123" → fund_transfer("{account_number}", "XYZ123", 1000)
+RULES:
+- NEVER ask again for account number or PIN.
+- For anything about balance, deposits, withdrawals, statement, or transfers, ALWAYS use the tools.
 
-❌ NEVER ASK FOR ACCOUNT NUMBER OR PIN
-✅ ONLY USE TOOLS FOR BANKING OPERATIONS
+TOOL ROUTING EXAMPLES:
+- "Check my balance" → check_balance("{account_number}")
+- "Deposit 1000" → deposit("{account_number}", 1000)
+- "Withdraw 500" → withdraw("{account_number}", 500)
+- "Show my statement" → mini_statement("{account_number}")
+- "Transfer 100 ABC5678" → fund_transfer("{account_number}", "ABC5678", 100)
 
-Be brief and use TOOLS FIRST.
+Be brief, friendly, and secure.
 """)
 
-# ========== MAIN CHAT LOOP ==========
-print(f"💡 Try: 'Check my balance', 'deposit 1000', 'statement'")
+print("💡 Try: 'Check my balance', 'deposit 1000', 'statement', 'transfer 100 ABC5678'")
+
+# ----------------- CHAT LOOP -----------------
 while True:
     user_input = input("You: ").strip()
     if user_input.lower() == "exit":
@@ -114,38 +124,82 @@ while True:
 
     text = user_input.lower()
 
-    # ========== KEYWORD BACKUP ==========
-    if any(word in text for word in ["balance", "bal"]):
+    # ---------- 1. TRANSFER (must be FIRST) ----------
+    if "transfer" in text:
+        parts = user_input.split()
+
+        nums = [int(s) for s in parts if s.isdigit()]
+        if not nums:
+            print("💸 Please specify amount, e.g. 'transfer 100 ABC5678'")
+            continue
+        amount = nums[0]
+
+        receiver_ac = None
+        for token in reversed(parts):
+            if not token.isdigit() and token.lower() not in ["to", "transfer"]:
+                receiver_ac = token
+                break
+
+        if not receiver_ac:
+            print("💸 Please specify receiver account, e.g. 'transfer 100 ABC5678'")
+            continue
+
+        result = transfer_money(account_number, receiver_ac, amount)
+        if "error" in result:
+            print(f"❌ {result['error']}")
+        else:
+            print(f"✔ Transferred ₹{amount} to {receiver_ac}")
+        continue
+
+    # ---------- 2. BALANCE ----------
+    if any(word in text for word in ["balance", "bal", "check balance"]):
         result = get_balance(account_number)
-        print(f"💰 Your balance: ₹{result['balance']}")
+        if "error" in result:
+            print(f"❌ {result['error']}")
+        else:
+            print(f"💰 Your balance: ₹{result['balance']}")
         continue
 
-    if any(word in text  for word in ["statement", " history", " transactions"]) and "transfer" not in text:
+    # ---------- 3. MINI STATEMENT (no 'transfer') ----------
+    if any(word in text for word in ["statement", " history", " transactions"]) and "transfer" not in text:
         result = get_transactions(account_number)
-        print("📄 Mini Statement:")
-        for t in result['transactions']:
-            print(f"  • {t}")
+        if "error" in result:
+            print(f"❌ {result['error']}")
+        else:
+            print("📄 Mini Statement:")
+            for t in result["transactions"]:
+                print(f"  • {t}")
         continue
 
+    # ---------- 4. DEPOSIT ----------
     if "deposit" in text:
         nums = [int(s) for s in user_input.split() if s.isdigit()]
-        if nums:
-            result = deposit_money(account_number, nums[0])
-            print(f"💰 {result}")
+        if not nums:
+            print("💰 Please specify amount, e.g. 'deposit 1000'")
+            continue
+        amount = nums[0]
+        result = deposit_money(account_number, amount)
+        if "error" in result:
+            print(f"❌ {result['error']}")
         else:
-            print("💰 Please specify amount (e.g., 'deposit 1000')")
+            print(f"✔ Deposited ₹{amount}. New balance: ₹{result['balance']}")
         continue
 
+    # ---------- 5. WITHDRAW ----------
     if "withdraw" in text:
         nums = [int(s) for s in user_input.split() if s.isdigit()]
-        if nums:
-            result = withdraw_money(account_number, nums[0])
-            print(f"💸 {result}")
+        if not nums:
+            print("💸 Please specify amount, e.g. 'withdraw 500'")
+            continue
+        amount = nums[0]
+        result = withdraw_money(account_number, amount)
+        if "error" in result:
+            print(f"❌ {result['error']}")
         else:
-            print("💸 Please specify amount (e.g., 'withdraw 500')")
+            print(f"✔ Withdrawn ₹{amount}. New balance: ₹{result['balance']}")
         continue
 
-    # ========== LLM TOOL CALLING ==========
+    # ---------- 6. LLM TOOL CALLING (fallback) ----------
     response = llm.invoke([system_context, HumanMessage(content=user_input)])
 
     tool_calls = []
@@ -170,5 +224,5 @@ while True:
             print(f"❌ Tool error: {str(e)}")
         continue
 
-    # ========== DEFAULT RESPONSE ==========
-    print("🤖 How can I help? Try: balance, deposit, withdraw, statement, transfer")
+    # ---------- 7. DEFAULT HELP ----------
+    print("🤖 I can help with: balance, deposit, withdraw, statement, transfer.")
