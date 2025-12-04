@@ -1,181 +1,174 @@
 import os
-import random
+import json
+import re
+from getpass import getpass
+from pymongo import MongoClient
 from dotenv import load_dotenv
 
-# Disable token parallel warnings
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain.tools import tool
+from langchain_openai import AzureChatOpenAI
 
-# Azure OpenAI + LangChain
-from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from tools.banking_tools import (
+    get_balance, deposit_money, withdraw_money,
+    get_transactions, transfer_money
+)
 
-#  Updated LangChain RAG API
-from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_classic.prompts import ChatPromptTemplate
-
-
-# Load environment
 load_dotenv()
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client["banking_ai"]
+users_collection = db["users"]
 
-# Azure Chat Model
+# ========== TOOLS ==========
+@tool("check_balance")
+def tool_check_balance(account_number: str):
+    """Check the current account balance for the specified account number."""
+    return get_balance(account_number)
+
+@tool("deposit")
+def tool_deposit(account_number: str, amount: int):
+    """Deposit a specified amount into the account."""
+    return deposit_money(account_number, amount)
+
+@tool("withdraw")
+def tool_withdraw(account_number: str, amount: int):
+    """Withdraw a specified amount from the account if sufficient balance exists."""
+    return withdraw_money(account_number, amount)
+
+@tool("mini_statement")
+def tool_statement(account_number: str):
+    """Retrieve the last 5 transactions (mini statement) for the account."""
+    return get_transactions(account_number)
+
+@tool("fund_transfer")
+def tool_fund_transfer(sender_ac: str, receiver_ac: str, amount: int):
+    """Transfer funds from sender account to receiver account."""
+    return transfer_money(sender_ac, receiver_ac, amount)
+
+tool_list = [tool_check_balance, tool_deposit, tool_withdraw, tool_statement, tool_fund_transfer]
+tool_dict = {t.name: t for t in tool_list}
+
+# ========== LLM (NO RAG) ==========
 llm = AzureChatOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
     api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    temperature=0
-)
+    temperature=0,
+).bind_tools(tool_list, tool_choice="auto")
 
-# Embedding Model
-embeddings = AzureOpenAIEmbeddings(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    azure_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT")
-)
+# ========== LOGIN ==========
+print("\n🤖 Banking AI - ABC Bank")
+account_number = input("🔢 Account Number: ").strip()
+user = users_collection.find_one({"account_number": account_number})
 
-# Load RAG Docs
-loader = DirectoryLoader("./docs", glob="*.txt", loader_cls=TextLoader)
-docs = loader.load()
+while not user:
+    print("❌ Invalid account number!")
+    account_number = input("🔢 Account Number: ").strip()
+    user = users_collection.find_one({"account_number": account_number})
 
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-chunks = splitter.split_documents(docs)
+customer_name = user["customer_name"]
+correct_pin = user["pin"]
 
-# FAISS Vector Store
-vectorstore = FAISS.from_documents(chunks, embeddings)
+print(f"👋 Hi {customer_name}! Enter your PIN:")
+attempts = 3
+while attempts > 0:
+    pin = getpass("🔐 PIN: ").strip()
+    if pin == correct_pin:
+        print(f"🔓 Welcome {customer_name}! 😊")
+        break
+    attempts -= 1
+    print(f"❌ Wrong PIN! Attempts left: {attempts}")
 
-# ---------------- RAG Prompt ----------------
-prompt = ChatPromptTemplate.from_template(
-    """
-    You are a helpful banking support assistant.
-    Use the context below to answer briefly and correctly:
+if attempts == 0:
+    exit("⛔ Account Locked!")
 
-    Context:
-    {context}
+# ========== EXPLICIT SYSTEM CONTEXT ==========
+system_context = SystemMessage(content=f"""
+CRITICAL BANKING INSTRUCTIONS:
 
-    Question:
-    {input}
-    """
-)
+✅ AUTHENTICATED USER:
+Customer: {customer_name}
+Account: {account_number} ← USE THIS FOR ALL TOOLS
 
-doc_chain = create_stuff_documents_chain(llm, prompt)
-qa_chain = create_retrieval_chain(vectorstore.as_retriever(), doc_chain)
+MANDATORY TOOL ROUTING:
+"balance", "check balance", "how much money" → check_balance("{account_number}")
+"deposit 1000", "add money" → deposit("{account_number}", 1000)  
+"withdraw 500" → withdraw("{account_number}", 500)
+"statement", "transactions" → mini_statement("{account_number}")
+"transfer 1000 XYZ123" → fund_transfer("{account_number}", "XYZ123", 1000)
 
-# ---------------- Banking System ----------------
+❌ NEVER ASK FOR ACCOUNT NUMBER OR PIN
+✅ ONLY USE TOOLS FOR BANKING OPERATIONS
 
-def add_txn(type, amount=0):
-    transactions.append(f"{type}: ₹{amount}")
-    if len(transactions) > 5:
-        transactions.pop(0)
+Be brief and use TOOLS FIRST.
+""")
 
-
-# ---------------- Chat Loop ----------------
-print("\n🤖 Banking AI Agent (Azure RAG + FAISS)")
-print("Welcome to ABC Bank virtual assistant!")
-
-stage = "ask_name"
-customer_name = ""
-account_number = ""
-authenticated = False
-correct_pin = "1234"
-balance = 25500
-transactions = []
-
+# ========== MAIN CHAT LOOP ==========
+print(f"💡 Try: 'Check my balance', 'deposit 1000', 'statement'")
 while True:
     user_input = input("You: ").strip()
-
     if user_input.lower() == "exit":
-        print(f"👋 Thank you for banking with us, {customer_name or 'customer'}!")
-        break
-
-    # Onboarding flow
-    if stage == "ask_name":
-        print("🤖 May I know your name?")
-        stage = "get_name"
-        continue
-
-    if stage == "get_name":
-        customer_name = user_input
-        print(f"🤖 Nice to meet you, {customer_name}! Please enter your account number:")
-        stage = "get_account"
-        continue
-
-    if stage == "get_account":
-        account_number = user_input
-        print(f"🤖 Thanks, {customer_name}. Please enter your 4‑digit PIN:")
-        stage = "get_pin"
-        continue
-
-    if stage == "get_pin":
-        if user_input == correct_pin:
-            authenticated = True
-            stage = "chat"
-            print(f"🔓 Login successful for A/C {account_number}. How can I help you today?")
-        else:
-            print("❌ Incorrect PIN. Try again:")
-        continue
-
-    # After this point, user is authenticated and normal logic runs
-    if not authenticated:
-        print("⛔ Session error. Please restart.")
+        print(f"👋 Bye {customer_name}, thanks for banking with us!")
         break
 
     text = user_input.lower()
 
-    # Commands
-    if "balance" in text:
-        print(f"💰 {customer_name}, your available balance is: ₹{balance}")
+    # ========== KEYWORD BACKUP ==========
+    if any(word in text for word in ["balance", "bal"]):
+        result = get_balance(account_number)
+        print(f"💰 Your balance: ₹{result['balance']}")
         continue
 
-    if "withdraw" in text:
-        nums = [int(s) for s in text.split() if s.isdigit()]
-        if not nums:
-            print("💸 Enter the amount to withdraw (for example: withdraw 1000):")
-            continue
-        amt = nums[0]
-        if amt > balance:
-            print("⚠ Insufficient balance!")
-        else:
-            balance -= amt
-            add_txn("Withdraw", amt)
-            print(f"✔ Withdrawn ₹{amt}. New balance: ₹{balance}")
+    if any(word in text  for word in ["statement", " history", " transactions"]) and "transfer" not in text:
+        result = get_transactions(account_number)
+        print("📄 Mini Statement:")
+        for t in result['transactions']:
+            print(f"  • {t}")
         continue
 
     if "deposit" in text:
-        nums = [int(s) for s in text.split() if s.isdigit()]
-        if not nums:
-            print("💰 Enter deposit amount (for example: deposit 2000):")
-            continue
-        amt = nums[0]
-        balance += amt
-        add_txn("Deposit", amt)
-        print(f"✔ Deposited ₹{amt}. New balance: ₹{balance}")
-        continue
-
-    if "statement" in text or "transactions" in text:
-        if not transactions:
-            print("📄 No recent transactions")
+        nums = [int(s) for s in user_input.split() if s.isdigit()]
+        if nums:
+            result = deposit_money(account_number, nums[0])
+            print(f"💰 {result}")
         else:
-            print("📄 Mini Statement:")
-            for t in transactions:
-                print(" -", t)
+            print("💰 Please specify amount (e.g., 'deposit 1000')")
         continue
 
-    if "block" in text and "card" in text:
-        ticket = random.randint(100000, 999999)
-        add_txn("Card Block")
-        print(f"🔒 Card blocked.\n📝 Ticket#: {ticket}")
+    if "withdraw" in text:
+        nums = [int(s) for s in user_input.split() if s.isdigit()]
+        if nums:
+            result = withdraw_money(account_number, nums[0])
+            print(f"💸 {result}")
+        else:
+            print("💸 Please specify amount (e.g., 'withdraw 500')")
         continue
 
-    # RAG fallback
-    result = qa_chain.invoke({
-        "input": user_input,
-        "authenticated": authenticated,
-        "balance": balance,
-        "transactions": transactions,
-        "customer_name": customer_name,
-        "account_number": account_number,
-    })
-    print("🤖 Agent:", result["answer"])
+    # ========== LLM TOOL CALLING ==========
+    response = llm.invoke([system_context, HumanMessage(content=user_input)])
+
+    tool_calls = []
+    if hasattr(response, "message") and hasattr(response.message, "additional_kwargs"):
+        tool_calls = response.message.additional_kwargs.get("tool_calls", [])
+    elif hasattr(response, "additional_kwargs"):
+        tool_calls = response.additional_kwargs.get("tool_calls", [])
+
+    if tool_calls:
+        call = tool_calls[0]
+        tool_name = call["function"]["name"]
+        tool_args = json.loads(call["function"]["arguments"])
+
+        tool_args.setdefault("account_number", account_number)
+        if tool_name == "fund_transfer":
+            tool_args["sender_ac"] = account_number
+
+        try:
+            result = tool_dict[tool_name].invoke(tool_args)
+            print(f"✅ {result}")
+        except Exception as e:
+            print(f"❌ Tool error: {str(e)}")
+        continue
+
+    # ========== DEFAULT RESPONSE ==========
+    print("🤖 How can I help? Try: balance, deposit, withdraw, statement, transfer")
