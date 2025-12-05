@@ -5,11 +5,16 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
+from langchain_openai import AzureChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain.tools import tool
+
 from tools.banking_tools import (
     get_balance, deposit_money, withdraw_money,
-    get_transactions, transfer_money,
+    get_transactions, transfer_money
 )
 
+# Load DB
 load_dotenv()
 client = MongoClient(os.getenv("MONGO_URI"))
 db = client["banking_ai"]
@@ -37,85 +42,80 @@ class ChatResponse(BaseModel):
     error: str | None = None
 
 
+
+# ============= Intent Detection Helpers ============= #
+
+def parse_number(msg: str):
+    nums = re.findall(r"\d+", msg)
+    return int(nums[0]) if nums else None
+
+def parse_account(msg: str):
+    match = re.search(r"[A-Z]{3}[0-9]{4}", msg, re.IGNORECASE)
+    return match.group(0).upper() if match else None
+
+
+
+# ---------------- CHAT API ---------------- #
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    msg = req.message.strip()
-    lower = msg.lower()
+    msg = req.message.lower()
+    acc = req.account_number
+    pin = req.pin
 
-    if not req.account_number:  # ⬅ Phase 1
-        if lower in ["hi", "hello", "hey"]:
-            return ChatResponse(reply="Welcome to ABC Bank. Please enter your account number.")
-        user = users_collection.find_one({"account_number": msg.upper()})
+    # Phase 1: Login
+    if msg == "login_auth":
+        user = users_collection.find_one({"account_number": acc})
+
         if not user:
-            return ChatResponse(reply="Account not found. Please enter a valid account number.")
-        return ChatResponse(reply="Account found. Now please enter your PIN.")
+            return ChatResponse(error="Account not found.")
 
-    user = users_collection.find_one({"account_number": req.account_number.upper()})
-    if not user:
-        return ChatResponse(reply="Invalid account. Try again.")
+        if pin != user["pin"]:
+            return ChatResponse(reply="Incorrect PIN. Try again.")
 
-    if not req.pin:  # ⬅ Phase 2
-        if msg != user["pin"]:
-            return ChatResponse(reply="Incorrect PIN. Please try again.")
-        return ChatResponse(reply=f"PIN verified. Hello {user['customer_name']}, how may I assist you today?")
+        return ChatResponse(reply=f"PIN verified. Hello {user['customer_name']}! How may I assist you today?")
 
-    account_number = req.account_number.upper()
+    # 🚀 Phase 2: FAST command routing (instant)
+    amount = parse_number(msg)
 
-    # ---------------- Banking Commands ---------------- #
+    if "balance" in msg:
+        result = get_balance(acc)
+        return ChatResponse(reply=f"Your current balance is ₹{result['balance']:,}")
 
-    if "balance" in lower:
-        res = get_balance(account_number)
-        return ChatResponse(reply=f"Your balance is ₹{res['balance']}")
+    if "withdraw" in msg or "debit" in msg:
+        if not amount:
+            return ChatResponse(reply="Please specify an amount to withdraw.")
+        result = withdraw_money(acc, amount)
+        if "error" in result:
+            return ChatResponse(error=result["error"])
+        return ChatResponse(reply=f"₹{amount:,} withdrawn successfully! New balance: ₹{result['balance']:,}")
 
-    if "deposit" in lower:
-        nums = [int(n) for n in msg.split() if n.isdigit()]
-        if not nums:
-            return ChatResponse(reply="Specify amount: deposit 200")
-        amount = nums[0]
-        res = deposit_money(account_number, amount)
-        return ChatResponse(reply=f"Deposited ₹{amount}. New balance ₹{res['balance']}")
+    if "deposit" in msg or "credit" in msg:
+        if not amount:
+            return ChatResponse(reply="Please specify an amount to deposit.")
+        result = deposit_money(acc, amount)
+        return ChatResponse(reply=f"₹{amount:,} deposited successfully! New balance: ₹{result['balance']:,}")
 
-    if "withdraw" in lower:
-        nums = [int(n) for n in msg.split() if n.isdigit()]
-        if not nums:
-            return ChatResponse(reply="Specify amount: withdraw 200")
-        amount = nums[0]
-        res = withdraw_money(account_number, amount)
-        if "error" in res:
-            return ChatResponse(reply=res["error"])
-        return ChatResponse(reply=f"Withdrawn ₹{amount}. New balance ₹{res['balance']}")
+    if "transfer" in msg or "send" in msg or "pay" in msg:
+        receiver = parse_account(msg)
+        if not receiver:
+            return ChatResponse(reply="Please specify a correct receiver account.")
+        if not amount:
+            return ChatResponse(reply="Specify amount to transfer.")
+        result = transfer_money(acc, receiver, amount)
+        if "error" in result:
+            return ChatResponse(error=result["error"])
+        return ChatResponse(reply=f"₹{amount:,} sent to {receiver} successfully ✔")
 
-    # 🔥 FIXED receiver account extraction
-    if any(x in lower for x in ["transfer", "send", "pay"]):
-        nums = [int(n) for n in msg.split() if n.isdigit()]
-        if not nums:
-            return ChatResponse(reply="Specify amount: transfer 200 to ABC5678")
-        amount = nums[0]
+    if "statement" in msg or "history" in msg:
+        result = get_transactions(acc)
+        if result["transactions"]:
+            return ChatResponse(reply="\n".join(result["transactions"]))
+        return ChatResponse(reply="No recent transactions.")
 
-        receiver_ac = None
-        match = re.search(r"\bto\s+([A-Za-z0-9]+)\b", msg, re.IGNORECASE)
-        if match:
-            receiver_ac = match.group(1).upper()
-        else:
-            parts = re.findall(r"[A-Za-z0-9]+", msg)
-            if len(parts) >= 2:
-                receiver_ac = parts[-1].upper()
 
-        print("Receiver extracted:", receiver_ac)
+    # 🧠 If unclear → fallback to LLM
+    return ChatResponse(
+        reply="Kindly select a valid service option: Balance | Deposit | Withdrawal | Transfer | Statement"
+    )
 
-        if not receiver_ac:
-            return ChatResponse(reply="Provide receiver account number.")
-
-        res = transfer_money(account_number, receiver_ac, amount)
-        if "error" in res:
-            return ChatResponse(reply=res["error"])
-        return ChatResponse(reply=f"Sent ₹{amount} to {receiver_ac}")
-
-    if "statement" in lower or "history" in lower:
-        res = get_transactions(account_number)
-        tx = res["transactions"]
-        if not tx:
-            return ChatResponse(reply="No recent transactions.")
-        return ChatResponse(reply="\n".join(tx))
-
-    return ChatResponse(reply="I can help with balance, withdraw, deposit, transfer, or statement.")

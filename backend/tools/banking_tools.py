@@ -79,12 +79,8 @@ def transfer_money(sender_ac: str, receiver_ac: str, amount: int) -> dict:
         return {"error": "Cannot transfer to the same account"}
 
     sender = users_collection.find_one({"account_number": sender_ac})
-    print("Looking for receiverR:", receiver_ac)
-    print("Looking for receiver:", receiver_ac.encode("unicode_escape"))
-
     receiver = users_collection.find_one({"account_number": receiver_ac})
-    print("DB Receiver Found:", receiver)
-
+ 
     if not sender:
         return {"error": "Sender account not found"}
     if not receiver:
