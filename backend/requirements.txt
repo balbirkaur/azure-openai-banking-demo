@@ -1,3 +1,10 @@
+# Web API
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+
+# Database
+pymongo==4.10.1
+
 # Core LangChain unified versions
 langchain==0.3.12
 langchain-community==0.3.12
@@ -16,6 +23,5 @@ pydantic==2.10.3
 pydantic-settings==2.6.1
 python-dotenv==1.0.1
 pymongo>=4.10.1
-bcrypt>=4.2.0
 
 
