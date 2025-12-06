@@ -51,7 +51,7 @@ export function ChatBot() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // For normal user messages, show them in chat
+    // Don't show "LOGIN_AUTH" text from user
     if (!(overrideCreds && trimmed === "LOGIN_AUTH")) {
       setMessages((prev) => [
         ...prev,
@@ -87,7 +87,7 @@ export function ChatBot() {
         if (nameMatch) setUserName(nameMatch[1]);
       }
 
-      // Detect balance from ₹
+      // Detect balance like ₹28,150
       const balMatch = reply.match(/₹([\d,]+)/);
       if (balMatch) {
         const val = parseInt(balMatch[1].replace(/,/g, ""), 10);
@@ -119,6 +119,7 @@ export function ChatBot() {
     const pinValid = /^[0-9]{4}$/.test(pin);
     if (!acValid || !pinValid) return;
 
+    // Just call login_auth – no extra auto messages to bot
     setMessages((prev) => [
       ...prev,
       { from: "user", text: "Login Attempt", time: timestamp() },
@@ -135,8 +136,6 @@ export function ChatBot() {
   return (
     <div className="h-screen w-full flex items-center justify-center bg-slate-900 text-white">
       <div className="w-[95%] max-w-3xl h-[92vh] bg-slate-800 rounded-2xl shadow-xl flex flex-col border border-slate-700">
-
-
         {/* Header */}
         <div className="px-6 py-3 border-b border-slate-700 flex items-center justify-between">
           <div>
@@ -154,8 +153,7 @@ export function ChatBot() {
               <input
                 placeholder="Account (ABC1234)"
                 className={`flex-1 px-3 py-2 rounded-md bg-slate-800 border ${
-                  accountNumber &&
-                  !/^[A-Z]{3}[0-9]{4}$/.test(accountNumber)
+                  accountNumber && !/^[A-Z]{3}[0-9]{4}$/.test(accountNumber)
                     ? "border-red-500"
                     : "border-slate-700"
                 }`}
@@ -232,14 +230,15 @@ export function ChatBot() {
             >
               <div>
                 <div
-                  className={`px-4 py-2 rounded-2xl text-sm max-w-[90%] ${
+                  className={`px-4 py-2 rounded-2xl text-sm max-w-[95%] ${
                     m.from === "user"
                       ? "bg-emerald-600"
-                      : "bg-slate-700 border border-slate-600"
+                      : "bg-slate-700 border border-slate-600 whitespace-pre-line"
                   }`}
                 >
                   {m.text}
                 </div>
+
                 <p className="text-[10px] text-slate-400 mt-1">{m.time}</p>
               </div>
             </div>
@@ -286,11 +285,11 @@ export function ChatBot() {
               )}
             </div>
 
-            {/* Tab content buttons */}
+            {/* Tab buttons */}
             <div className="flex flex-wrap gap-2 p-2 justify-center">
               {activeTab === "Balance" && (
                 <button
-                  onClick={() => handleQuickPrompt("Check balance")}
+                  onClick={() => handleQuickPrompt("Check my balance")}
                   className="text-xs px-3 py-1 bg-slate-700 rounded-md hover:bg-emerald-600 whitespace-nowrap"
                 >
                   Check balance
@@ -370,7 +369,7 @@ export function ChatBot() {
                     onClick={() => handleQuickPrompt("Mini statement")}
                     className="text-xs px-3 py-1 bg-slate-700 rounded-md hover:bg-emerald-600 whitespace-nowrap"
                   >
-                    Last 5 transactions
+                    Mini Statement
                   </button>
                   <button
                     onClick={() => handleQuickPrompt("Transaction history")}
@@ -385,9 +384,7 @@ export function ChatBot() {
                 <>
                   <button
                     onClick={() =>
-                      handleQuickPrompt(
-                        "Where did I spend most this week?"
-                      )
+                      handleQuickPrompt("Where did I spend most this week?")
                     }
                     className="text-xs px-3 py-1 bg-slate-700 rounded-md hover:bg-emerald-600 whitespace-nowrap"
                   >
@@ -415,7 +412,9 @@ export function ChatBot() {
               placeholder="Type your banking request"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendChatRequest(input)}
+              onKeyDown={(e) =>
+                e.key === "Enter" && sendChatRequest(input)
+              }
             />
             <button
               className="rounded-full bg-emerald-600 px-4 py-2 disabled:opacity-50"

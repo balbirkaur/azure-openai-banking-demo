@@ -1,4 +1,7 @@
-import os, re
+import os
+import json
+from typing import Optional
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,20 +10,22 @@ from dotenv import load_dotenv
 
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain.tools import tool
 
-from tools.banking_tools import (
-    get_balance, deposit_money, withdraw_money,
-    get_transactions, transfer_money
-)
 
-# Load DB
+# ========== ENV + DB SETUP ========== #
 load_dotenv()
-client = MongoClient(os.getenv("MONGO_URI"))
+
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise ValueError("MONGO_URI not set in .env")
+
+client = MongoClient(MONGO_URI)
 db = client["banking_ai"]
 users_collection = db["users"]
 
-app = FastAPI()
+
+# ========== FASTAPI APP ========== #
+app = FastAPI(title="Secure Banking with AI")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,91 +36,240 @@ app.add_middleware(
 )
 
 
+# ========== SCHEMAS ========== #
 class ChatRequest(BaseModel):
     message: str
-    account_number: str | None = None
-    pin: str | None = None
+    account_number: Optional[str] = None
+    pin: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
-    reply: str | None = None
-    error: str | None = None
+    reply: Optional[str] = None
+    error: Optional[str] = None
 
 
-
-# ============= Intent Detection Helpers ============= #
-
-def parse_number(msg: str):
-    nums = re.findall(r"\d+", msg)
-    return int(nums[0]) if nums else None
-
-def parse_account(msg: str):
-    match = re.search(r"[A-Z]{3}[0-9]{4}", msg, re.IGNORECASE)
-    return match.group(0).upper() if match else None
+# ================================================ #
+# ========== BANKING HELPERS (TOOLS) ============= #
+# ================================================ #
+def get_balance(acc: str) -> dict:
+    user = users_collection.find_one({"account_number": acc})
+    if not user:
+        return {"error": "Account not found"}
+    return {"balance": user.get("balance", 0)}
 
 
+def deposit_money(acc: str, amount: int) -> dict:
+    if amount <= 0:
+        return {"error": "Invalid amount"}
 
-# ---------------- CHAT API ---------------- #
+    users_collection.update_one(
+        {"account_number": acc},
+        {
+            "$inc": {"balance": amount},
+            "$push": {"transactions": f"➕ Deposit ₹{amount}"}
+        }
+    )
+    return get_balance(acc)
 
+
+def withdraw_money(acc: str, amount: int) -> dict:
+    user = users_collection.find_one({"account_number": acc})
+    if not user:
+        return {"error": "Account not found"}
+
+    if user.get("balance", 0) < amount:
+        return {"error": "Insufficient balance"}
+
+    users_collection.update_one(
+        {"account_number": acc},
+        {
+            "$inc": {"balance": -amount},
+            "$push": {"transactions": f"➖ Withdraw ₹{amount}"}
+        }
+    )
+    return get_balance(acc)
+
+
+def transfer_money(acc: str, receiver: str, amount: int) -> dict:
+    sender = users_collection.find_one({"account_number": acc})
+    rec = users_collection.find_one({"account_number": receiver})
+
+    if not sender:
+        return {"error": "Sender account not found"}
+    if not rec:
+        return {"error": "Receiver account not found"}
+    if sender.get("balance", 0) < amount:
+        return {"error": "Insufficient balance"}
+
+    users_collection.update_one(
+        {"account_number": acc},
+        {
+            "$inc": {"balance": -amount},
+            "$push": {"transactions": f"🔁 Sent ₹{amount} to {receiver}"}
+        }
+    )
+
+    users_collection.update_one(
+        {"account_number": receiver},
+        {
+            "$inc": {"balance": amount},
+            "$push": {"transactions": f"📥 Received ₹{amount} from {acc}"}
+        }
+    )
+
+    return get_balance(acc)
+
+
+def get_transactions(acc: str) -> dict:
+    user = users_collection.find_one({"account_number": acc})
+    if not user:
+        return {"error": "Account not found"}
+    return {"transactions": user.get("transactions", [])[-5:]}
+
+
+# ================================================ #
+# ==========  LLM SETUP (WORKING CONFIG) ========= #
+# ================================================ #
+llm = AzureChatOpenAI(
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    temperature=0,
+)
+
+
+# ================================================ #
+# ==========  MAIN CHAT ENDPOINT ================= #
+# ================================================ #
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    msg = req.message.lower()
+    msg_raw = req.message or ""
+    msg = msg_raw.strip()
+    lower = msg.lower()
     acc = req.account_number
     pin = req.pin
 
-    # Phase 1: Login
-    if msg == "login_auth":
+    # -------- PHASE 1: LOGIN -------- #
+    if lower == "login_auth":
+        if not acc or not pin:
+            return ChatResponse(error="Account number and PIN required.")
+
         user = users_collection.find_one({"account_number": acc})
-
         if not user:
-            return ChatResponse(error="Account not found.")
+            return ChatResponse(error="Account not found")
 
-        if pin != user["pin"]:
-            return ChatResponse(reply="Incorrect PIN. Try again.")
+        if pin != str(user.get("pin")):
+            return ChatResponse(reply="Incorrect PIN ❌ Try again")
 
-        return ChatResponse(reply=f"PIN verified. Hello {user['customer_name']}! How may I assist you today?")
+        return ChatResponse(
+            reply=f"PIN verified. Hello {user['customer_name']}! 😊"
+        )
 
-    # 🚀 Phase 2: FAST command routing (instant)
-    amount = parse_number(msg)
+    # -------- PHASE 2: AUTH CHECK -------- #
+    if not acc or not pin:
+        return ChatResponse(error="Please login first")
 
-    if "balance" in msg:
-        result = get_balance(acc)
-        return ChatResponse(reply=f"Your current balance is ₹{result['balance']:,}")
-
-    if "withdraw" in msg or "debit" in msg:
-        if not amount:
-            return ChatResponse(reply="Please specify an amount to withdraw.")
-        result = withdraw_money(acc, amount)
-        if "error" in result:
-            return ChatResponse(error=result["error"])
-        return ChatResponse(reply=f"₹{amount:,} withdrawn successfully! New balance: ₹{result['balance']:,}")
-
-    if "deposit" in msg or "credit" in msg:
-        if not amount:
-            return ChatResponse(reply="Please specify an amount to deposit.")
-        result = deposit_money(acc, amount)
-        return ChatResponse(reply=f"₹{amount:,} deposited successfully! New balance: ₹{result['balance']:,}")
-
-    if "transfer" in msg or "send" in msg or "pay" in msg:
-        receiver = parse_account(msg)
-        if not receiver:
-            return ChatResponse(reply="Please specify a correct receiver account.")
-        if not amount:
-            return ChatResponse(reply="Specify amount to transfer.")
-        result = transfer_money(acc, receiver, amount)
-        if "error" in result:
-            return ChatResponse(error=result["error"])
-        return ChatResponse(reply=f"₹{amount:,} sent to {receiver} successfully ✔")
-
-    if "statement" in msg or "history" in msg:
-        result = get_transactions(acc)
-        if result["transactions"]:
-            return ChatResponse(reply="\n".join(result["transactions"]))
-        return ChatResponse(reply="No recent transactions.")
+    user = users_collection.find_one({"account_number": acc})
+    if not user or str(user.get("pin")) != pin:
+        return ChatResponse(error="Invalid login credentials")
 
 
-    # 🧠 If unclear → fallback to LLM
-    return ChatResponse(
-        reply="Kindly select a valid service option: Balance | Deposit | Withdrawal | Transfer | Statement"
+    # -------- PHASE 3: LLM INTENT PARSING -------- #
+    system_prompt = (
+        "You are a secure banking assistant for an authenticated user.\n"
+        "Supported services: balance, deposit, withdraw, transfer, statement.\n\n"
+        "Respond ONLY using JSON:\n"
+        "{\n"
+        '  "intent": "balance|deposit|withdraw|transfer|statement|greeting|farewell|unsupported",\n'
+        '  "amount": <integer or null>,\n'
+        '  "receiver": "ABC1234 or null"\n'
+        "}\n\n"
+        "- If unclear → intent = \"unsupported\"\n"
+        "- Hi/Hello = greeting\n"
+        "- Thanks/Bye = farewell\n"
+        "NO explanation. ONLY JSON!"
     )
 
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=msg_raw),
+    ]
+
+    try:
+        ai_resp = llm.invoke(messages)
+        print("LLM RAW RESPONSE:", ai_resp.content)
+        decision = json.loads(ai_resp.content)
+    except Exception as e:
+        print("LLM JSON ERROR:", e)
+        return ChatResponse(
+            reply="❌ I'm sorry, I didn't understand that. Try again."
+        )
+
+    intent = decision.get("intent")
+    amount = decision.get("amount")
+    receiver = decision.get("receiver")
+
+
+    # -------- PHASE 4: ACTION ROUTING -------- #
+
+    if intent == "balance":
+        res = get_balance(acc)
+        return ChatResponse(reply=f"💰 Your balance: ₹{res['balance']:,}")
+
+    if intent == "deposit":
+        if amount is None:
+            return ChatResponse(reply="Please specify amount")
+        res = deposit_money(acc, int(amount))
+        if "error" in res:
+            return ChatResponse(error=res["error"])
+        return ChatResponse(reply=f"➕ ₹{amount:,} deposited ✔")
+
+    if intent == "withdraw":
+        if amount is None:
+            return ChatResponse(reply="How much to withdraw?")
+        res = withdraw_money(acc, int(amount))
+        if "error" in res:
+            return ChatResponse(error=res["error"])
+        return ChatResponse(reply=f"➖ ₹{amount:,} withdrawn ✔")
+
+    if intent == "transfer":
+        if not receiver:
+            return ChatResponse(reply="Receiver account missing")
+        if amount is None:
+            return ChatResponse(reply="Amount missing")
+        res = transfer_money(acc, receiver, int(amount))
+        if "error" in res:
+            return ChatResponse(error=res["error"])
+        return ChatResponse(
+            reply=f"🔁 ₹{amount:,} sent to **{receiver}** successfully"
+        )
+
+    if intent == "statement":
+        res = get_transactions(acc)
+        txns = res.get("transactions", [])
+
+        if not txns:
+            return ChatResponse(reply="📭 No transactions found")
+
+        # newest first
+        formatted = "\n".join(reversed(txns))
+
+        return ChatResponse(reply=f"📄 Last 5 transactions:\n{formatted}")
+
+
+    if intent == "greeting":
+        return ChatResponse(reply="👋 Hello! How can I help with banking today?")
+
+    if intent == "farewell":
+        return ChatResponse(reply="😊 Thank you for banking with us! Bye 👋")
+
+    return ChatResponse(
+        reply="🙇 I'm sorry, I can only help with banking-related services."
+    )
+
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
