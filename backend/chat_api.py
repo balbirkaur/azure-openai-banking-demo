@@ -8,17 +8,19 @@ from dotenv import load_dotenv
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain.tools import tool
+from db import db
 
-from tools.banking_tools import (
+from banking_tools import (
     get_balance, deposit_money, withdraw_money,
     get_transactions, transfer_money
 )
 
 # Load DB
 load_dotenv()
-client = MongoClient(os.getenv("MONGO_URI"))
-db = client["banking_ai"]
+
 users_collection = db["users"]
+print("DB in use:", db.name)
+print("User test:", users_collection.find_one({"account_number": "ABC1234"}))
 
 app = FastAPI()
 

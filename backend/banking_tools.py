@@ -1,8 +1,7 @@
 from pymongo import MongoClient, ReturnDocument
 import os
+from db import db
 
-client = MongoClient(os.getenv("MONGO_URI"))
-db = client["banking_ai"]
 users_collection = db["users"]
 
 
@@ -24,6 +23,8 @@ def create_user(customer_name: str, account_number: str, pin: str, initial_balan
 def get_balance(account_number: str) -> dict:
     account_number = normalize_ac(account_number)
     user = users_collection.find_one({"account_number": account_number})
+    print(users_collection.find_one({"account_number": "ABC1234"}))
+
     if not user:
         return {"error": "Account not found"}
     return {"balance": user["balance"]}
