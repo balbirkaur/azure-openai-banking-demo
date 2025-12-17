@@ -1,0 +1,22 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [
+    { "id": "rect1", "type": "rectangle", "x": 100, "y": 100, "width": 160, "height": 80, "strokeColor": "#1e1e1e", "backgroundColor": "#ffffff", "fillStyle": "solid", "strokeWidth": 2, "roundness": { "type": 3 }, "boundElements": [{ "id": "t1", "type": "text" }] },
+    { "id": "t1", "type": "text", "x": 110, "y": 120, "width": 140, "text": "Client Request\n(Message + Auth)", "fontSize": 16, "textAlign": "center", "containerId": "rect1" },
+    { "id": "rect2", "type": "rectangle", "x": 340, "y": 100, "width": 180, "height": 80, "strokeColor": "#5c90d2", "backgroundColor": "#d1e3ff", "fillStyle": "solid", "strokeWidth": 2, "roundness": { "type": 3 }, "boundElements": [{ "id": "t2", "type": "text" }] },
+    { "id": "t2", "type": "text", "x": 350, "y": 120, "width": 160, "text": "FastAPI App\n(Logic & Routing)", "fontSize": 16, "textAlign": "center", "containerId": "rect2" },
+    { "id": "rect3", "type": "rectangle", "x": 600, "y": 100, "width": 180, "height": 80, "strokeColor": "#c084fc", "backgroundColor": "#f3e8ff", "fillStyle": "solid", "strokeWidth": 2, "roundness": { "type": 3 }, "boundElements": [{ "id": "t3", "type": "text" }] },
+    { "id": "t3", "type": "text", "x": 610, "y": 120, "width": 160, "text": "Azure OpenAI\n(Intent Parser)", "fontSize": 16, "textAlign": "center", "containerId": "rect3" },
+    { "id": "db1", "type": "ellipse", "x": 340, "y": 260, "width": 180, "height": 80, "strokeColor": "#1e1e1e", "backgroundColor": "#f1f3f5", "fillStyle": "solid", "strokeWidth": 2, "boundElements": [{ "id": "t4", "type": "text" }] },
+    { "id": "t4", "type": "text", "x": 360, "y": 280, "width": 140, "text": "MongoDB\n(Banking Data)", "fontSize": 16, "textAlign": "center", "containerId": "db1" },
+    { "id": "rect4", "type": "rectangle", "x": 340, "y": 420, "width": 180, "height": 100, "strokeColor": "#1e1e1e", "backgroundColor": "#ffffff", "fillStyle": "solid", "strokeWidth": 2, "roundness": { "type": 3 }, "boundElements": [{ "id": "t5", "type": "text" }] },
+    { "id": "t5", "type": "text", "x": 350, "y": 440, "width": 160, "text": "Helper Tools:\n- get_balance()\n- transfer_money()", "fontSize": 14, "textAlign": "center", "containerId": "rect4" },
+    { "id": "arr1", "type": "arrow", "x": 260, "y": 140, "points": [[0,0], [80,0]], "strokeWidth": 2, "endArrowhead": "arrow" },
+    { "id": "arr2", "type": "arrow", "x": 520, "y": 130, "points": [[0,0], [80,0]], "strokeWidth": 2, "endArrowhead": "arrow" },
+    { "id": "arr3", "type": "arrow", "x": 600, "y": 150, "points": [[0,0], [-80,0]], "strokeWidth": 2, "endArrowhead": "arrow" },
+    { "id": "arr4", "type": "arrow", "x": 430, "y": 180, "points": [[0,0], [0,80]], "strokeWidth": 2, "endArrowhead": "arrow" },
+    { "id": "arr5", "type": "arrow", "x": 430, "y": 340, "points": [[0,0], [0,80]], "strokeWidth": 2, "endArrowhead": "arrow" }
+  ]
+}
